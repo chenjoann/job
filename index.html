@@ -624,13 +624,25 @@
                 const jobsRef = database.ref('jobs');
                 jobsRef.on('value', (snapshot) => {
                     const data = snapshot.val();
-                    jobs = data ? Object.values(data) : [];
-                    console.log('📋 從雲端載入職缺:', jobs.length, '筆');
+                    const newJobs = data ? Object.values(data) : [];
+                    
+                    // 檢查是否有新增的職缺
+                    if (newJobs.length > jobs.length) {
+                        console.log('🆕 偵測到新職缺！總數從', jobs.length, '增加到', newJobs.length);
+                    }
+                    
+                    jobs = newJobs;
+                    console.log('📋 從雲端同步職缺:', jobs.length, '筆');
                     updateStats();
+                    
+                    // 如果在查詢頁面，更新顯示
                     if (document.getElementById('search-tab').classList.contains('active')) {
                         displayJobs(jobs);
                         updateLocationFilter();
                     }
+                }, (error) => {
+                    console.error('❌ 監聽資料變化失敗:', error);
+                    handleFirebaseError();
                 });
 
                 // 設定允許匿名寫入的標記
@@ -672,29 +684,6 @@
                 .catch((error) => {
                     console.error('❌ 載入職缺失敗:', error);
                     handleFirebaseError();
-                });
-        }
-
-        // 儲存職缺到 Firebase
-        function saveJobToFirebase(jobData) {
-            if (!database || !isConnected || !isFirebaseAvailable) {
-                // 離線模式，僅存到記憶體
-                jobs.push(jobData);
-                updateStats();
-                return Promise.resolve();
-            }
-
-            const jobsRef = database.ref('jobs');
-            return jobsRef.push(jobData)
-                .then(() => {
-                    console.log('✅ 職缺已儲存到雲端資料庫');
-                })
-                .catch((error) => {
-                    console.error('❌ 儲存失敗:', error);
-                    // 降級到記憶體存儲
-                    jobs.push(jobData);
-                    updateStats();
-                    throw error;
                 });
         }
 
@@ -770,46 +759,73 @@
             submitBtn.disabled = true;
             submitBtn.textContent = '🔄 發布中...';
             
-            try {
-                const jobData = {
-                    id: Date.now() + Math.random().toString(36).substr(2, 9),
-                    company: document.getElementById('company').value,
-                    jobTitle: document.getElementById('jobTitle').value,
-                    location: document.getElementById('location').value,
-                    employmentType: document.getElementById('employmentType').value,
-                    salary: document.getElementById('salary').value,
-                    experience: document.getElementById('experience').value,
-                    skills: document.getElementById('skills').value,
-                    description: document.getElementById('description').value,
-                    contactEmail: document.getElementById('contactEmail').value,
-                    createdDate: new Date().toLocaleDateString('zh-TW'),
-                    createdAt: new Date().toISOString()
-                };
+            // 先收集表單資料
+            const jobData = {
+                id: Date.now() + Math.random().toString(36).substr(2, 9),
+                company: document.getElementById('company').value.trim(),
+                jobTitle: document.getElementById('jobTitle').value.trim(),
+                location: document.getElementById('location').value.trim(),
+                employmentType: document.getElementById('employmentType').value,
+                salary: document.getElementById('salary').value.trim(),
+                experience: document.getElementById('experience').value,
+                skills: document.getElementById('skills').value.trim(),
+                description: document.getElementById('description').value.trim(),
+                contactEmail: document.getElementById('contactEmail').value.trim(),
+                createdDate: new Date().toLocaleDateString('zh-TW'),
+                createdAt: new Date().toISOString()
+            };
 
-                // 驗證必填欄位
-                if (!jobData.company || !jobData.jobTitle || !jobData.location || 
-                    !jobData.employmentType || !jobData.description || !jobData.contactEmail) {
-                    showUploadStatus('error', '❌ 請填寫所有必填欄位！');
-                    return;
-                }
-
-                await saveJobToFirebase(jobData);
-                
-                if (isFirebaseAvailable && isConnected) {
-                    showUploadStatus('success', '✅ 職缺已成功發布到雲端！');
-                } else {
-                    showUploadStatus('success', '✅ 職缺已發布（離線模式）');
-                }
-                
-                clearJobForm();
-
-            } catch (error) {
-                console.error('❌ 發布職缺失敗:', error);
-                showUploadStatus('error', '❌ 發布失敗，請稍後再試');
-            } finally {
+            // 驗證必填欄位
+            if (!jobData.company || !jobData.jobTitle || !jobData.location || 
+                !jobData.employmentType || !jobData.description || !jobData.contactEmail) {
+                showUploadStatus('error', '❌ 請填寫所有必填欄位！');
                 submitBtn.disabled = false;
                 submitBtn.textContent = '🚀 發布職缺';
+                return;
             }
+
+            console.log('📝 準備發布職缺:', jobData.jobTitle, '@', jobData.company);
+
+            // 簡化處理邏輯
+            if (!database || !isConnected || !isFirebaseAvailable) {
+                // 離線模式
+                console.log('📱 使用離線模式');
+                jobs.push(jobData);
+                updateStats();
+                showUploadStatus('success', '✅ 職缺已發布（離線模式）');
+                clearJobForm();
+            } else {
+                // 雲端模式
+                console.log('☁️ 使用雲端模式');
+                const jobsRef = database.ref('jobs');
+                
+                jobsRef.push(jobData)
+                    .then((ref) => {
+                        console.log('🎉 雲端發布成功！Firebase ID:', ref.key);
+                        showUploadStatus('success', '✅ 職缺已成功發布到雲端！');
+                        clearJobForm();
+                    })
+                    .catch((error) => {
+                        console.error('❌ 雲端發布失敗:', error);
+                        console.log('🔄 降級到離線模式');
+                        // 降級處理
+                        jobs.push(jobData);
+                        updateStats();
+                        showUploadStatus('success', '✅ 職缺已發布（離線備份）');
+                        clearJobForm();
+                    })
+                    .finally(() => {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = '🚀 發布職缺';
+                    });
+                
+                // 提前返回，避免重複設定按鈕狀態
+                return;
+            }
+
+            // 只有離線模式才會執行到這裡
+            submitBtn.disabled = false;
+            submitBtn.textContent = '🚀 發布職缺';
         }
 
         // 清空表單
